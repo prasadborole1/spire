@@ -13,6 +13,7 @@ import (
 )
 
 const cacheFetchEntriesTTL = 1 * time.Second
+
 func FetchRegistrationEntries(ctx context.Context, dataStore datastore.DataStore, spiffeID string) ([]*common.RegistrationEntry, error) {
 	fetcher := newRegistrationEntryFetcher(dataStore)
 	return fetcher.Fetch(ctx, spiffeID)
