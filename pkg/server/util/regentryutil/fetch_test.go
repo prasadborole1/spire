@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/bluele/gcache"
 	"github.com/spiffe/spire/pkg/server/plugin/datastore"
 	"github.com/spiffe/spire/proto/spire/common"
 	"github.com/spiffe/spire/test/fakes/fakedatastore"
@@ -17,6 +18,9 @@ var (
 func TestFetchRegistrationEntries(t *testing.T) {
 	assert := assert.New(t)
 	dataStore := fakedatastore.New()
+
+	clk := gcache.NewFakeClock()
+	cache := gcache.New(10).Clock(clk).LRU().Build()
 
 	createRegistrationEntry := func(entry *common.RegistrationEntry) *common.RegistrationEntry {
 		resp, err := dataStore.CreateRegistrationEntry(ctx, &datastore.CreateRegistrationEntryRequest{
@@ -93,4 +97,9 @@ func TestFetchRegistrationEntries(t *testing.T) {
 		fiveEntry,
 	}
 	assert.Equal(expected, actual)
+
+	withCache, err := FetchRegistrationEntriesWithCache(ctx, dataStore, cache, rootID)
+	assert.NoError(err)
+
+	assert.Equal(expected, withCache)
 }
