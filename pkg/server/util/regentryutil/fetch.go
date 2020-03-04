@@ -3,16 +3,24 @@ package regentryutil
 import (
 	"context"
 	"errors"
+	"time"
 
+	"github.com/bluele/gcache"
 	"github.com/golang/protobuf/ptypes/wrappers"
 	"github.com/spiffe/spire/pkg/common/util"
 	"github.com/spiffe/spire/pkg/server/plugin/datastore"
 	"github.com/spiffe/spire/proto/spire/common"
 )
 
+const cacheFetchEntriesTTL = 1 * time.Second
 func FetchRegistrationEntries(ctx context.Context, dataStore datastore.DataStore, spiffeID string) ([]*common.RegistrationEntry, error) {
 	fetcher := newRegistrationEntryFetcher(dataStore)
 	return fetcher.Fetch(ctx, spiffeID)
+}
+
+func FetchRegistrationEntriesWithCache(ctx context.Context, dataStore datastore.DataStore, cache gcache.Cache, spiffeID string) ([]*common.RegistrationEntry, error) {
+	fetcher := newRegistrationEntryFetcher(dataStore)
+	return fetcher.FetchWithCache(ctx, cache, spiffeID)
 }
 
 type registrationEntryFetcher struct {
@@ -27,6 +35,14 @@ func newRegistrationEntryFetcher(dataStore datastore.DataStore) *registrationEnt
 
 func (f *registrationEntryFetcher) Fetch(ctx context.Context, id string) ([]*common.RegistrationEntry, error) {
 	entries, err := f.fetch(ctx, id, make(map[string]bool))
+	if err != nil {
+		return nil, err
+	}
+	return util.DedupRegistrationEntries(entries), nil
+}
+
+func (f *registrationEntryFetcher) FetchWithCache(ctx context.Context, cache gcache.Cache, id string) ([]*common.RegistrationEntry, error) {
+	entries, err := f.fetchWithCache(ctx, id, cache, make(map[string]bool))
 	if err != nil {
 		return nil, err
 	}
@@ -53,6 +69,41 @@ func (f *registrationEntryFetcher) fetch(ctx context.Context, id string, visited
 		entries = append(entries, descendantEntries...)
 	}
 
+	return entries, nil
+}
+
+func (f *registrationEntryFetcher) fetchWithCache(ctx context.Context, id string, cache gcache.Cache, visited map[string]bool) ([]*common.RegistrationEntry, error) {
+	if visited[id] {
+		return nil, nil
+	}
+	visited[id] = true
+
+	if cache.Has(id) {
+		entries, err := cache.Get(id)
+		if err != nil {
+			return nil, err
+		}
+		return entries.([]*common.RegistrationEntry), nil
+	}
+
+	directEntries, err := f.directEntries(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	entries := directEntries
+	for _, directEntry := range directEntries {
+		descendantEntries, err := f.fetchWithCache(ctx, directEntry.SpiffeId, cache, visited)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, descendantEntries...)
+	}
+
+	err = cache.SetWithExpire(id, entries, cacheFetchEntriesTTL)
+	if err != nil {
+		return nil, err
+	}
 	return entries, nil
 }
 

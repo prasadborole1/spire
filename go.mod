@@ -22,6 +22,7 @@ require (
 	github.com/armon/go-metrics v0.3.2
 	github.com/aws/aws-sdk-go v1.28.9
 	github.com/blang/semver v3.5.1+incompatible
+	github.com/bluele/gcache v0.0.0-20190518031135-bc40bd653833
 	github.com/cenkalti/backoff/v3 v3.0.0
 	github.com/containerd/containerd v1.3.2 // indirect
 	github.com/dgrijalva/jwt-go v3.2.0+incompatible
