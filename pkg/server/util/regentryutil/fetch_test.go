@@ -18,6 +18,9 @@ func TestFetchRegistrationEntries(t *testing.T) {
 	assert := assert.New(t)
 	dataStore := fakedatastore.New()
 
+	cache, err := NewFetchSVIDCache(10)
+	assert.NoError(err)
+
 	createRegistrationEntry := func(entry *common.RegistrationEntry) *common.RegistrationEntry {
 		resp, err := dataStore.CreateRegistrationEntry(ctx, &datastore.CreateRegistrationEntryRequest{
 			Entry: entry,
@@ -93,4 +96,9 @@ func TestFetchRegistrationEntries(t *testing.T) {
 		fiveEntry,
 	}
 	assert.Equal(expected, actual)
+
+	withCache, err := FetchRegistrationEntriesWithCache(ctx, dataStore, cache, rootID)
+	assert.NoError(err)
+
+	assert.Equal(expected, withCache)
 }
