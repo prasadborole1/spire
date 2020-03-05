@@ -12,7 +12,7 @@ import (
 	"github.com/spiffe/spire/proto/spire/common"
 )
 
-const cacheFetchEntriesTTL = 1 * time.Second
+const cacheFetchEntriesTTL = 5 * time.Second
 
 func FetchRegistrationEntries(ctx context.Context, dataStore datastore.DataStore, spiffeID string) ([]*common.RegistrationEntry, error) {
 	fetcher := newRegistrationEntryFetcher(dataStore)

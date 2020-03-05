@@ -3,6 +3,7 @@ package regentryutil
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/bluele/gcache"
 	"github.com/spiffe/spire/pkg/server/plugin/datastore"
@@ -19,8 +20,7 @@ func TestFetchRegistrationEntries(t *testing.T) {
 	assert := assert.New(t)
 	dataStore := fakedatastore.New()
 
-	clk := gcache.NewFakeClock()
-	cache := gcache.New(10).Clock(clk).LRU().Build()
+	cache := gcache.New(10).LRU().Build()
 
 	createRegistrationEntry := func(entry *common.RegistrationEntry) *common.RegistrationEntry {
 		resp, err := dataStore.CreateRegistrationEntry(ctx, &datastore.CreateRegistrationEntryRequest{
@@ -102,4 +102,8 @@ func TestFetchRegistrationEntries(t *testing.T) {
 	assert.NoError(err)
 
 	assert.Equal(expected, withCache)
+	assert.Equal(6, cache.Len(true))
+
+	time.Sleep(cacheFetchEntriesTTL)
+	assert.Equal(0, cache.Len(true))
 }
