@@ -19,9 +19,9 @@ func TestFetchSVIDCache(t *testing.T) {
 	mt := &mockTime{}
 
 	ttl := time.Minute
-	cache, err := NewFetchSVIDCache(10)
+	cache, err := NewFetchX509SVIDCache(10)
 	require.NoError(t, err)
-	cache.timeNow = mt.Now
+	cache.TimeNow = mt.Now
 
 	key := "spiffe://example.org/root"
 	oneID := "spiffe://example.org/1"
@@ -60,7 +60,7 @@ func TestFetchSVIDCache(t *testing.T) {
 	require.False(t, ok)
 
 	// verify its actually removed from internal cache
-	ifc, ok := cache.cache.Get(key)
+	ifc, ok := cache.Cache.Get(key)
 	require.Nil(t, ifc)
 	require.False(t, ok)
 }

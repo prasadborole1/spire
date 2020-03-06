@@ -54,18 +54,18 @@ type Handler struct {
 	c       HandlerConfig
 	limiter Limiter
 
-	dsCache               *datastoreCache
-	fetchX509SVIDCache    *regentryutil.FetchSVIDCache
-	useFetchX509SVIDCache bool
+	dsCache                          *datastoreCache
+	fetchRegistrationEntriesCache    *regentryutil.FetchRegistrationEntriesCache
+	useFetchRegistrationEntriesCache bool
 }
 
 func NewHandler(config HandlerConfig) *Handler {
 	if config.Clock == nil {
 		config.Clock = clock.New()
 	}
-	fetchX509SVIDCache, err := regentryutil.NewFetchSVIDCache(fetchSVIDCacheSize)
+	fetchX509SVIDCache, err := regentryutil.NewFetchX509SVIDCache(fetchSVIDCacheSize)
 	if err != nil {
-		config.Log.Errorf("could not create lru cache for fetchX509SVID", err)
+		config.Log.Errorf("could not create lru cache for fetchX509SVID. Not using cache for FetchX509SVID", err)
 		return &Handler{
 			c:       config,
 			limiter: NewLimiter(config.Log),
@@ -74,11 +74,11 @@ func NewHandler(config HandlerConfig) *Handler {
 	}
 
 	return &Handler{
-		c:                     config,
-		limiter:               NewLimiter(config.Log),
-		dsCache:               newDatastoreCache(config.Catalog.GetDataStore(), config.Clock),
-		fetchX509SVIDCache:    fetchX509SVIDCache,
-		useFetchX509SVIDCache: true,
+		c:                                config,
+		limiter:                          NewLimiter(config.Log),
+		dsCache:                          newDatastoreCache(config.Catalog.GetDataStore(), config.Clock),
+		fetchRegistrationEntriesCache:    fetchX509SVIDCache,
+		useFetchRegistrationEntriesCache: true,
 	}
 }
 
@@ -288,8 +288,8 @@ func (h *Handler) FetchX509SVID(server node.Node_FetchX509SVIDServer) (err error
 		}
 
 		var regEntries []*common.RegistrationEntry
-		if h.useFetchX509SVIDCache {
-			regEntries, err = regentryutil.FetchRegistrationEntriesWithCache(ctx, h.c.Catalog.GetDataStore(), h.fetchX509SVIDCache, agentID)
+		if h.useFetchRegistrationEntriesCache {
+			regEntries, err = regentryutil.FetchRegistrationEntriesWithCache(ctx, h.c.Catalog.GetDataStore(), h.fetchRegistrationEntriesCache, agentID)
 		} else {
 			regEntries, err = regentryutil.FetchRegistrationEntries(ctx, h.c.Catalog.GetDataStore(), agentID)
 		}

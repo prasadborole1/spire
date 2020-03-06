@@ -15,12 +15,12 @@ const cacheFetchEntriesTTL = 5 * time.Second
 
 func FetchRegistrationEntries(ctx context.Context, dataStore datastore.DataStore, spiffeID string) ([]*common.RegistrationEntry, error) {
 	fetcher := newRegistrationEntryFetcher(dataStore)
-	return fetcher.Fetch(ctx, spiffeID)
+	return fetcher.Fetch(ctx, nil, spiffeID)
 }
 
-func FetchRegistrationEntriesWithCache(ctx context.Context, dataStore datastore.DataStore, cache *FetchSVIDCache, spiffeID string) ([]*common.RegistrationEntry, error) {
+func FetchRegistrationEntriesWithCache(ctx context.Context, dataStore datastore.DataStore, cache *FetchRegistrationEntriesCache, spiffeID string) ([]*common.RegistrationEntry, error) {
 	fetcher := newRegistrationEntryFetcher(dataStore)
-	return fetcher.FetchWithCache(ctx, cache, spiffeID)
+	return fetcher.Fetch(ctx, cache, spiffeID)
 }
 
 type registrationEntryFetcher struct {
@@ -33,16 +33,14 @@ func newRegistrationEntryFetcher(dataStore datastore.DataStore) *registrationEnt
 	}
 }
 
-func (f *registrationEntryFetcher) Fetch(ctx context.Context, id string) ([]*common.RegistrationEntry, error) {
-	entries, err := f.fetch(ctx, id, make(map[string]bool))
-	if err != nil {
-		return nil, err
+func (f *registrationEntryFetcher) Fetch(ctx context.Context, cache *FetchRegistrationEntriesCache, id string) ([]*common.RegistrationEntry, error) {
+	var entries []*common.RegistrationEntry
+	var err error
+	if cache != nil {
+		entries, err = f.fetchWithCache(ctx, id, cache, make(map[string]bool))
+	} else {
+		entries, err = f.fetch(ctx, id, make(map[string]bool))
 	}
-	return util.DedupRegistrationEntries(entries), nil
-}
-
-func (f *registrationEntryFetcher) FetchWithCache(ctx context.Context, cache *FetchSVIDCache, id string) ([]*common.RegistrationEntry, error) {
-	entries, err := f.fetchWithCache(ctx, id, cache, make(map[string]bool))
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +70,7 @@ func (f *registrationEntryFetcher) fetch(ctx context.Context, id string, visited
 	return entries, nil
 }
 
-func (f *registrationEntryFetcher) fetchWithCache(ctx context.Context, id string, cache *FetchSVIDCache, visited map[string]bool) ([]*common.RegistrationEntry, error) {
+func (f *registrationEntryFetcher) fetchWithCache(ctx context.Context, id string, cache *FetchRegistrationEntriesCache, visited map[string]bool) ([]*common.RegistrationEntry, error) {
 	if visited[id] {
 		return nil, nil
 	}

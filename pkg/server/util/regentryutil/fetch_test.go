@@ -18,7 +18,7 @@ func TestFetchRegistrationEntries(t *testing.T) {
 	assert := assert.New(t)
 	dataStore := fakedatastore.New()
 
-	cache, err := NewFetchSVIDCache(10)
+	cache, err := NewFetchX509SVIDCache(10)
 	assert.NoError(err)
 
 	createRegistrationEntry := func(entry *common.RegistrationEntry) *common.RegistrationEntry {
