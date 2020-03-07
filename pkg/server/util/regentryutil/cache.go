@@ -17,7 +17,7 @@ type FetchRegistrationEntriesCache struct {
 	mu sync.RWMutex
 }
 
-type cacheResult struct {
+type cacheValue struct {
 	entries   []*common.RegistrationEntry
 	expiresAt time.Time
 }
@@ -40,7 +40,7 @@ func (c *FetchRegistrationEntriesCache) Get(key string) ([]*common.RegistrationE
 	if !ok {
 		return nil, false
 	}
-	value, ok := ifc.(*cacheResult)
+	value, ok := ifc.(*cacheValue)
 	if !ok {
 		return nil, false
 	}
@@ -54,7 +54,7 @@ func (c *FetchRegistrationEntriesCache) Get(key string) ([]*common.RegistrationE
 func (c *FetchRegistrationEntriesCache) AddWithExpire(key string, value []*common.RegistrationEntry, expire time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.Cache.Add(key, &cacheResult{
+	c.Cache.Add(key, &cacheValue{
 		entries:   value,
 		expiresAt: c.TimeNow().Add(expire),
 	})

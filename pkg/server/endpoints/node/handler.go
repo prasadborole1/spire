@@ -65,7 +65,7 @@ func NewHandler(config HandlerConfig) *Handler {
 	}
 	fetchX509SVIDCache, err := regentryutil.NewFetchX509SVIDCache(fetchSVIDCacheSize)
 	if err != nil {
-		config.Log.Errorf("could not create lru cache for fetchX509SVID. Not using cache for FetchX509SVID", err)
+		config.Log.Errorf("could not create lru cache. Not using cache for FetchX509SVID", err)
 		return &Handler{
 			c:       config,
 			limiter: NewLimiter(config.Log),
