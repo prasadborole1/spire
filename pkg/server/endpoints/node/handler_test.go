@@ -644,9 +644,8 @@ func (s *HandlerSuite) TestFetchX509SVIDWithCache() {
 
 	s.Equal([]*common.RegistrationEntry{entry}, upd.RegistrationEntries)
 
-	cacheResult, ok := s.fetchRegistrationEntriesCache.Get(agentID)
-	s.Require().True(ok)
-	s.Equal([]*common.RegistrationEntry{entry}, cacheResult)
+	_, ok := s.fetchRegistrationEntriesCache.Get(agentID)
+	s.Require().False(ok)
 
 	s.assertBundlesInUpdate(upd, otherDomainBundle)
 	s.Empty(upd.Svids)

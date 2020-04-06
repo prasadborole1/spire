@@ -13,70 +13,46 @@ import (
 
 const cacheFetchEntriesTTL = 1 * time.Second
 
-func FetchRegistrationEntries(ctx context.Context, dataStore datastore.DataStore, spiffeID string) ([]*common.RegistrationEntry, error) {
-	fetcher := newRegistrationEntryFetcher(dataStore)
-	return fetcher.Fetch(ctx, nil, spiffeID)
+func FetchRegistrationEntriesWithCache(ctx context.Context, dataStore datastore.DataStore, cache RegistrationEntriesCache, spiffeID string) ([]*common.RegistrationEntry, error) {
+	fetcher := newRegistrationEntryFetcher(dataStore, cache)
+	return fetcher.Fetch(ctx, spiffeID)
 }
 
-func FetchRegistrationEntriesWithCache(ctx context.Context, dataStore datastore.DataStore, cache *FetchRegistrationEntriesCache, spiffeID string) ([]*common.RegistrationEntry, error) {
-	fetcher := newRegistrationEntryFetcher(dataStore)
-	return fetcher.Fetch(ctx, cache, spiffeID)
+func FetchRegistrationEntries(ctx context.Context, dataStore datastore.DataStore, spiffeID string) ([]*common.RegistrationEntry, error) {
+	fetcher := newRegistrationEntryFetcher(dataStore, &nullCache{})
+	return fetcher.Fetch(ctx, spiffeID)
 }
 
 type registrationEntryFetcher struct {
 	dataStore datastore.DataStore
+	cache     RegistrationEntriesCache
 }
 
-func newRegistrationEntryFetcher(dataStore datastore.DataStore) *registrationEntryFetcher {
+func newRegistrationEntryFetcher(dataStore datastore.DataStore, cache RegistrationEntriesCache) *registrationEntryFetcher {
 	return &registrationEntryFetcher{
 		dataStore: dataStore,
+		cache:     cache,
 	}
 }
 
-func (f *registrationEntryFetcher) Fetch(ctx context.Context, cache *FetchRegistrationEntriesCache, id string) ([]*common.RegistrationEntry, error) {
+func (f *registrationEntryFetcher) Fetch(ctx context.Context, id string) ([]*common.RegistrationEntry, error) {
 	var entries []*common.RegistrationEntry
 	var err error
-	if cache != nil {
-		entries, err = f.fetchWithCache(ctx, id, cache, make(map[string]bool))
-	} else {
-		entries, err = f.fetch(ctx, id, make(map[string]bool))
-	}
+	visited := make(map[string]bool)
+	entries, err = f.fetch(ctx, id, visited, false)
 	if err != nil {
 		return nil, err
 	}
 	return util.DedupRegistrationEntries(entries), nil
 }
 
-func (f *registrationEntryFetcher) fetch(ctx context.Context, id string, visited map[string]bool) ([]*common.RegistrationEntry, error) {
+func (f *registrationEntryFetcher) fetch(ctx context.Context, id string, visited map[string]bool, shouldCache bool) ([]*common.RegistrationEntry, error) {
 	if visited[id] {
 		return nil, nil
 	}
 	visited[id] = true
 
-	directEntries, err := f.directEntries(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-
-	entries := directEntries
-	for _, directEntry := range directEntries {
-		descendantEntries, err := f.fetch(ctx, directEntry.SpiffeId, visited)
-		if err != nil {
-			return nil, err
-		}
-		entries = append(entries, descendantEntries...)
-	}
-
-	return entries, nil
-}
-
-func (f *registrationEntryFetcher) fetchWithCache(ctx context.Context, id string, cache *FetchRegistrationEntriesCache, visited map[string]bool) ([]*common.RegistrationEntry, error) {
-	if visited[id] {
-		return nil, nil
-	}
-	visited[id] = true
-
-	cachedEntries, ok := cache.Get(id)
+	cachedEntries, ok := f.cache.Get(id)
 	if ok {
 		return cachedEntries, nil
 	}
@@ -88,14 +64,16 @@ func (f *registrationEntryFetcher) fetchWithCache(ctx context.Context, id string
 
 	entries := directEntries
 	for _, directEntry := range directEntries {
-		descendantEntries, err := f.fetchWithCache(ctx, directEntry.SpiffeId, cache, visited)
+		descendantEntries, err := f.fetch(ctx, directEntry.SpiffeId, visited, true)
 		if err != nil {
 			return nil, err
 		}
 		entries = append(entries, descendantEntries...)
 	}
 
-	cache.AddWithExpire(id, entries, cacheFetchEntriesTTL)
+	if shouldCache {
+		f.cache.AddWithExpire(id, entries, cacheFetchEntriesTTL)
+	}
 	return entries, nil
 }
 
@@ -167,4 +145,14 @@ func (f *registrationEntryFetcher) mappedEntries(ctx context.Context, clientID s
 	}
 
 	return listResp.Entries, nil
+}
+
+type nullCache struct {
+}
+
+func (c *nullCache) Get(key string) ([]*common.RegistrationEntry, bool) {
+	return nil, false
+}
+
+func (c *nullCache) AddWithExpire(key string, value []*common.RegistrationEntry, expire time.Duration) {
 }

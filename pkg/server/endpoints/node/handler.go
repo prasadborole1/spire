@@ -36,7 +36,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const fetchSVIDCacheSize = 100_000
+const fetchSVIDCacheSize = 500_000
 
 type HandlerConfig struct {
 	Log         logrus.FieldLogger
