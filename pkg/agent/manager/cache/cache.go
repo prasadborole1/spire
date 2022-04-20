@@ -118,6 +118,15 @@ type Cache struct {
 
 	// bundles holds the trust bundles, keyed by trust domain id (i.e. "spiffe://domain.test")
 	bundles map[spiffeid.TrustDomain]*bundleutil.Bundle
+
+	// svids are stored by entry IDs
+	svids map[string]*X509SVID
+
+	// newEntries holds new entries which needs to get svids to store them cache
+	newEntries map[string]bool
+
+	// maxSVIDCacheSize is a soft limit of number of SVIDs cache should store
+	maxSVIDCacheSize int
 }
 
 // StaleEntry holds stale entries with SVIDs expiration time
@@ -139,9 +148,12 @@ func New(log logrus.FieldLogger, trustDomain spiffeid.TrustDomain, bundle *Bundl
 		records:      make(map[string]*cacheRecord),
 		selectors:    make(map[selector]*selectorIndex),
 		staleEntries: make(map[string]bool),
+		newEntries: make(map[string]bool),
 		bundles: map[spiffeid.TrustDomain]*bundleutil.Bundle{
 			trustDomain: bundle,
 		},
+		svids :           make(map[string]*X509SVID),
+		maxSVIDCacheSize: 50, // 1000 maybe?
 	}
 }
 
@@ -153,12 +165,13 @@ func (c *Cache) Identities() []Identity {
 
 	out := make([]Identity, 0, len(c.records))
 	for _, record := range c.records {
-		if record.svid == nil {
+		svid ,ok := c.svids[record.entry.EntryId]
+		if !ok{
 			// The record does not have an SVID yet and should not be returned
 			// from the cache.
 			continue
 		}
-		out = append(out, makeIdentity(record))
+		out = append(out, makeNewIdentity(record, svid))
 	}
 	sortIdentities(out)
 	return out
@@ -168,26 +181,18 @@ func (c *Cache) CountSVIDs() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	var records int
-	for _, record := range c.records {
-		if record.svid == nil {
-			// The record does not have an SVID yet and should not be returned
-			// from the cache.
-			continue
-		}
-		records++
-	}
-
-	return records
+	return len(c.svids)
 }
 
+// TODO: needs to be updated to return just registration entries
 func (c *Cache) MatchingIdentities(selectors []*common.Selector) []Identity {
 	set, setDone := allocSelectorSet(selectors...)
 	defer setDone()
 
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.matchingIdentities(set)
+	// TODO: create new method `matchingEntries` and muse it here
+	return c.matchingSVIDs(set)
 }
 
 func (c *Cache) FetchWorkloadUpdate(selectors []*common.Selector) *WorkloadUpdate {
@@ -207,7 +212,7 @@ func (c *Cache) SubscribeToWorkloadUpdates(selectors []*common.Selector) Subscri
 	for s := range sub.set {
 		c.addSelectorIndexSub(s, sub)
 	}
-	c.notify(sub)
+	//separately call notify for new subscribers
 	return sub
 }
 
@@ -282,10 +287,13 @@ func (c *Cache) UpdateEntries(update *UpdateEntries, checkSVID func(*common.Regi
 			c.delSelectorIndicesRecord(selRem, record)
 			notifySets = append(notifySets, selRem)
 			delete(c.records, id)
+			delete(c.svids, id)
 			// Remove stale entry since, registration entry is no longer on cache.
 			delete(c.staleEntries, id)
 		}
 	}
+
+	outdatedEntries := make(map[string]struct{})
 
 	// Add/update records for registration entries in the update
 	for _, newEntry := range update.RegistrationEntries {
@@ -344,9 +352,9 @@ func (c *Cache) UpdateEntries(update *UpdateEntries, checkSVID func(*common.Regi
 			notifySets = append(notifySets, notifySet)
 		}
 
-		// Invoke the svid checker callback for this record
-		if checkSVID != nil && checkSVID(existingEntry, newEntry, record.svid) {
-			c.staleEntries[newEntry.EntryId] = true
+		// Identify stale/outdated entries
+		if existingEntry != nil && existingEntry.RevisionNumber != newEntry.RevisionNumber {
+			outdatedEntries[newEntry.EntryId] = struct{}{}
 		}
 
 		// Log all the details of the update to the DEBUG log
@@ -375,6 +383,45 @@ func (c *Cache) UpdateEntries(update *UpdateEntries, checkSVID func(*common.Regi
 		}
 	}
 
+	// add all entries with active subscribers
+	activeSubs, lastAccessTimestamps := c.syncSVIDs()
+	extraSize := len(c.svids) - c.maxSVIDCacheSize
+
+	// delete svids without subscribers and which have not been accessed in last hour
+	if extraSize > 0  {
+		// sort lastAccessTimestamps
+		sortTimestamps(lastAccessTimestamps)
+		now := time.Now()
+		beforeAnHour := now.Add(-1 * time.Hour).UnixMilli()
+		for _, record := range lastAccessTimestamps {
+			if extraSize <= 0 {
+				break
+			}
+			if _, ok := c.svids[record.id]; ok {
+				if _, exists := activeSubs[record.id]; !exists {
+					// remove svid if has not been accessed in last hour
+					if record.timestamp < beforeAnHour {
+						c.log.WithField("record_id", record.id).WithField("record_timestamp", record.timestamp).Info("Removing record")
+						delete(c.svids, record.id)
+						extraSize--
+					}
+				}
+			}
+		}
+	}
+
+	// Update all stale svids or svids whose registration entry is outdated
+	for id, svid := range c.svids {
+		if checkSVID != nil && checkSVID(nil, c.records[id].entry, svid) {
+			c.staleEntries[id] = true
+		} else if _ ,ok := outdatedEntries[id]; ok {
+			c.staleEntries[id] = true
+		}
+	}
+
+	c.log.WithField("record_size", len(c.records)).WithField("svid_size", len(c.svids)).WithField(
+		"active_subscribers", len(activeSubs)).Info("Sync")
+
 	if bundleRemoved || len(bundleChanged) > 0 {
 		c.BundleCache.Update(c.bundles)
 	}
@@ -402,7 +449,7 @@ func (c *Cache) UpdateSVIDs(update *UpdateSVIDs) {
 			continue
 		}
 
-		record.svid = svid
+		c.svids[entryID] = svid
 		notifySet.Merge(record.entry.Selectors...)
 		log := c.log.WithFields(logrus.Fields{
 			telemetry.Entry:    record.entry.EntryId,
@@ -410,11 +457,31 @@ func (c *Cache) UpdateSVIDs(update *UpdateSVIDs) {
 		})
 		log.Debug("SVID updated")
 
-		// Registration entry is updated, remove it from stale map
+		// Registration entry is updated, remove it from stale and new entry map
 		delete(c.staleEntries, entryID)
+		delete(c.newEntries, entryID)
 		c.notifyBySelectorSet(notifySet)
 		clearSelectorSet(notifySet)
 	}
+}
+
+// GetNewEntries obtains a list of new entries
+func (c *Cache) GetNewEntries() []*StaleEntry {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var newEntries []*StaleEntry
+	for entryID := range c.newEntries {
+		cachedEntry, ok := c.records[entryID]
+		if !ok {
+			c.log.WithField(telemetry.RegistrationID, entryID).Debug("New entry marker found for unknown entry. Please fill a bug")
+			delete(c.newEntries, entryID)
+			continue
+		}
+		newEntries = append(newEntries, &StaleEntry{
+			Entry:     cachedEntry.entry,
+		})
+	}
+	return newEntries
 }
 
 // GetStaleEntries obtains a list of stale entries
@@ -432,8 +499,8 @@ func (c *Cache) GetStaleEntries() []*StaleEntry {
 		}
 
 		var expiresAt time.Time
-		if cachedEntry.svid != nil {
-			expiresAt = cachedEntry.svid.Chain[0].NotAfter
+		if cachedSvid, ok := c.svids[entryID]; ok {
+			expiresAt = cachedSvid.Chain[0].NotAfter
 		}
 
 		staleEntries = append(staleEntries, &StaleEntry{
@@ -443,6 +510,84 @@ func (c *Cache) GetStaleEntries() []*StaleEntry {
 	}
 
 	return staleEntries
+}
+
+func (c *Cache) MissingSvidRecords(selectors []*common.Selector) []*StaleEntry {
+	//c.log.WithField("selectors", selectors).Info("MissingSvidRecords")
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	set, setFree := allocSelectorSet(selectors...)
+	defer setFree()
+
+	records, recordsDone := c.getRecordsForSelectors(set)
+	defer recordsDone()
+
+	if len(records) == 0 {
+		return nil
+	}
+	out := make([]*StaleEntry, 0, len(records))
+	for record := range records {
+		if _,ok := c.svids[record.entry.EntryId]; !ok {
+			out = append(out, &StaleEntry{
+				Entry:     record.entry,
+			})
+		}
+		// Set lastAccessTimestamp so that svid LRU cache can be cleaned based on this timestamp
+		record.lastAccessTimestamp = time.Now().UnixMilli()
+	}
+	return out
+}
+
+
+func (c *Cache) NotifyBySelectorSet(selectors []*common.Selector) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	set, setFree := allocSelectorSet(selectors...)
+	defer setFree()
+	c.notifyBySelectorSet(set)
+}
+
+
+// SyncActiveSubscribersSVIDs will sync svid cache with newEntries map for all actively used svids and non-actove svids until maxSVIDCacheSize
+func (c *Cache) SyncActiveSubscribersSVIDs() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.syncSVIDs()
+}
+
+func (c *Cache) syncSVIDs() (map[string]struct{},[]record) {
+	activeSubs := make(map[string]struct{})
+	lastAccessTimestamps := make([]record, len(c.records))
+
+	for id, record := range c.records {
+		for _, sel := range record.entry.Selectors {
+			if index, ok := c.selectors[makeSelector(sel)]; ok && index != nil {
+				if len(index.subs) > 0 {
+					if _,ok := c.svids[id]; !ok {
+						activeSubs[id] = struct{}{}
+						c.newEntries[id] = true
+					}
+				}
+			}
+		}
+		lastAccessTimestamps = append(lastAccessTimestamps, newRecord(record.lastAccessTimestamp, id))
+	}
+
+	remainderSize := c.maxSVIDCacheSize - len(c.svids)
+	// add non active records which are not cached to newEntries
+	for id, _ := range c.records {
+		if len(c.newEntries) >= remainderSize {
+			break
+		}
+		if _, ok := c.svids[id]; !ok {
+			if _, ok := c.newEntries[id]; !ok {
+				c.newEntries[id] = true
+			}
+		}
+	}
+
+	return activeSubs, lastAccessTimestamps
 }
 
 func (c *Cache) updateOrCreateRecord(newEntry *common.RegistrationEntry) (*cacheRecord, *common.RegistrationEntry) {
@@ -581,6 +726,8 @@ func (c *Cache) notify(sub *subscriber) {
 	sub.notify(update)
 }
 
+
+
 func (c *Cache) allSubscribers() (subscriberSet, func()) {
 	subs, subsDone := allocSubscriberSet()
 	for _, index := range c.selectors {
@@ -603,7 +750,7 @@ func (c *Cache) getSubscribers(set selectorSet) (subscriberSet, func()) {
 	return subs, subsDone
 }
 
-func (c *Cache) matchingIdentities(set selectorSet) []Identity {
+func (c *Cache) matchingSVIDs(set selectorSet) []Identity {
 	records, recordsDone := c.getRecordsForSelectors(set)
 	defer recordsDone()
 
@@ -616,7 +763,9 @@ func (c *Cache) matchingIdentities(set selectorSet) []Identity {
 	// TODO: figure out how to determine the "default" identity
 	out := make([]Identity, 0, len(records))
 	for record := range records {
-		out = append(out, makeIdentity(record))
+		if svid,ok := c.svids[record.entry.EntryId]; ok {
+			out = append(out, makeNewIdentity(record, svid))
+		}
 	}
 	sortIdentities(out)
 	return out
@@ -626,7 +775,7 @@ func (c *Cache) buildWorkloadUpdate(set selectorSet) *WorkloadUpdate {
 	w := &WorkloadUpdate{
 		Bundle:           c.bundles[c.trustDomain],
 		FederatedBundles: make(map[spiffeid.TrustDomain]*bundleutil.Bundle),
-		Identities:       c.matchingIdentities(set),
+		Identities:       c.matchingSVIDs(set),
 	}
 
 	// Add in the bundles the workload is federated with.
@@ -656,17 +805,13 @@ func (c *Cache) buildWorkloadUpdate(set selectorSet) *WorkloadUpdate {
 }
 
 func (c *Cache) getRecordsForSelectors(set selectorSet) (recordSet, func()) {
-	// Build and dedup a list of candidate entries. Ignore those without an
-	// SVID but otherwise don't check for selector set inclusion yet, since
+	// Build and dedup a list of candidate entries. Don't check for selector set inclusion yet, since
 	// that is a more expensive operation and we could easily have duplicate
 	// entries to check.
 	records, recordsDone := allocRecordSet()
 	for selector := range set {
 		if index := c.getSelectorIndexForRead(selector); index != nil {
 			for record := range index.records {
-				if record.svid == nil {
-					continue
-				}
 				records[record] = struct{}{}
 			}
 		}
@@ -708,9 +853,9 @@ func (c *Cache) getSelectorIndexForRead(s selector) *selectorIndex {
 }
 
 type cacheRecord struct {
-	entry *common.RegistrationEntry
-	svid  *X509SVID
-	subs  map[*subscriber]struct{}
+	entry               *common.RegistrationEntry
+	subs                map[*subscriber]struct{}
+	lastAccessTimestamp int64
 }
 
 func newCacheRecord() *cacheRecord {
@@ -744,10 +889,25 @@ func sortIdentities(identities []Identity) {
 	})
 }
 
-func makeIdentity(record *cacheRecord) Identity {
+func sortTimestamps(records []record) {
+	sort.Slice(records, func(a, b int) bool {
+		return records[a].timestamp < records[b].timestamp
+	})
+}
+
+func makeNewIdentity(record *cacheRecord, svid *X509SVID) Identity {
 	return Identity{
 		Entry:      record.entry,
-		SVID:       record.svid.Chain,
-		PrivateKey: record.svid.PrivateKey,
+		SVID:       svid.Chain,
+		PrivateKey: svid.PrivateKey,
 	}
+}
+
+type record struct {
+	timestamp int64
+	id string
+}
+
+func newRecord(timestamp int64, id string) record {
+	return record{timestamp: timestamp, id: id}
 }

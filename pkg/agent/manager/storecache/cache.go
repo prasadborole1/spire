@@ -219,6 +219,12 @@ func (c *Cache) UpdateSVIDs(update *cache.UpdateSVIDs) {
 	}
 }
 
+func (c *Cache) GetNewEntries() []*cache.StaleEntry {
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
+	return []*cache.StaleEntry{}
+}
+
 // GetStaleEntries obtains a list of stale entries, that needs new SVIDs
 func (c *Cache) GetStaleEntries() []*cache.StaleEntry {
 	c.mtx.Lock()

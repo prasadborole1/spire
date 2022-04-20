@@ -95,6 +95,7 @@ type manager struct {
 	// backoff calculator for fetch interval, backing off if error is returned on
 	// fetch attempt
 	backoff backoff.BackOff
+	svidSyncbackoff backoff.BackOff
 
 	client client.Client
 
@@ -112,6 +113,7 @@ func (m *manager) Initialize(ctx context.Context) error {
 	m.storeBundle(m.cache.Bundle())
 
 	m.backoff = backoff.NewBackoff(m.clk, m.c.SyncInterval)
+	m.svidSyncbackoff = backoff.NewBackoff(m.clk, 500 * time.Millisecond)
 
 	err := m.synchronize(ctx)
 	if nodeutil.ShouldAgentReattest(err) {
@@ -126,6 +128,7 @@ func (m *manager) Run(ctx context.Context) error {
 
 	err := util.RunTasks(ctx,
 		m.runSynchronizer,
+		m.runSyncSVIDs,
 		m.runSVIDObserver,
 		m.runBundleObserver,
 		m.svid.Run)
@@ -145,7 +148,18 @@ func (m *manager) Run(ctx context.Context) error {
 }
 
 func (m *manager) SubscribeToCacheChanges(selectors cache.Selectors) cache.Subscriber {
-	return m.cache.SubscribeToWorkloadUpdates(selectors)
+	// block until all svids are cached
+	subs := m.cache.SubscribeToWorkloadUpdates(selectors)
+	//TODO: clean up blocking logic
+	for {
+		if len(m.cache.MissingSvidRecords(selectors)) == 0 {
+			break
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
+	m.cache.NotifyBySelectorSet(selectors)
+	return subs
 }
 
 func (m *manager) SubscribeToSVIDChanges() observer.Stream {
@@ -168,6 +182,7 @@ func (m *manager) SetRotationFinishedHook(f func()) {
 	m.svid.SetRotationFinishedHook(f)
 }
 
+// TODO: needs to be updated to just return entries
 func (m *manager) MatchingIdentities(selectors []*common.Selector) []cache.Identity {
 	return m.cache.MatchingIdentities(selectors)
 }
@@ -237,6 +252,25 @@ func (m *manager) runSynchronizer(ctx context.Context) error {
 			m.c.Log.WithError(err).Error("Synchronize failed")
 		default:
 			m.backoff.Reset()
+		}
+	}
+}
+
+func (m *manager) runSyncSVIDs(ctx context.Context) error {
+	for {
+		select {
+		case <-m.clk.After(m.svidSyncbackoff.NextBackOff()):
+		case <-ctx.Done():
+			return nil
+		}
+
+		err := m.syncSVIDs(ctx)
+		switch {
+		case err != nil:
+			// Just log the error and wait for next synchronization
+			m.c.Log.WithError(err).Error("SVID sync failed")
+		default:
+			m.svidSyncbackoff.Reset()
 		}
 	}
 }

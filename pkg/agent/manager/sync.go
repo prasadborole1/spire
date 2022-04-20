@@ -35,6 +35,14 @@ type Cache interface {
 
 	// GetStaleEntries gets a list of records that need update SVIDs
 	GetStaleEntries() []*cache.StaleEntry
+
+	// GetNewEntries gets a list of records that need new SVIDs
+	GetNewEntries() []*cache.StaleEntry
+}
+
+func (m *manager) syncSVIDs(ctx context.Context) (err error) {
+	m.cache.SyncActiveSubscribersSVIDs()
+	return m.newSVIDs(ctx, m.cache.GetNewEntries(), m.cache)
 }
 
 // synchronize fetches the authorized entries from the server, updates the
@@ -126,6 +134,32 @@ func (m *manager) updateCache(ctx context.Context, update *cache.UpdateEntries, 
 		c.UpdateSVIDs(update)
 	}
 
+	return m.newSVIDs(ctx, c.GetNewEntries(), c)
+}
+
+func (m *manager) newSVIDs(ctx context.Context, entries []*cache.StaleEntry, c Cache) error{
+	var csrs []csrRequest
+	if len(entries) > 0 {
+		for _, newEntry := range entries {
+			// we've exceeded the CSR limit, don't make any more CSRs
+			if len(csrs) >= limits.SignLimitPerIP {
+				break
+			}
+
+			csrs = append(csrs, csrRequest{
+				EntryID:              newEntry.Entry.EntryId,
+				SpiffeID:             newEntry.Entry.SpiffeId,
+				CurrentSVIDExpiresAt: newEntry.ExpiresAt,
+			})
+		}
+
+		update, err := m.fetchSVIDs(ctx, csrs)
+		if err != nil {
+			return err
+		}
+		// the values in `update` now belong to the cache. DO NOT MODIFY.
+		c.UpdateSVIDs(update)
+	}
 	return nil
 }
 
