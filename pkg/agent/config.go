@@ -52,6 +52,12 @@ type Config struct {
 	// SyncInterval controls how often the agent sync synchronizer waits
 	SyncInterval time.Duration
 
+	// MaxSvidCacheSize is a soft limit of number of SVIDs cache should store
+	MaxSvidCacheSize int
+
+	// SVIDCacheExpiryPeriod after which unused svids from the cache will be cleaned
+	SVIDCacheExpiryPeriod time.Duration
+
 	// Trust domain and associated CA bundle
 	TrustDomain spiffeid.TrustDomain
 	TrustBundle []*x509.Certificate

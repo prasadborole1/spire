@@ -14,6 +14,11 @@ import (
 	"github.com/spiffe/spire/proto/spire/common"
 )
 
+const (
+	DefaultMaxSvidCacheSize = 1000
+	DefaultSVIDCacheExpiryPeriod = 1 * time.Hour
+)
+
 type Selectors []*common.Selector
 type Bundle = bundleutil.Bundle
 
@@ -126,7 +131,10 @@ type Cache struct {
 	newEntries map[string]bool
 
 	// maxSVIDCacheSize is a soft limit of number of SVIDs cache should store
-	maxSVIDCacheSize int
+	maxSvidCacheSize int
+
+	// svidCacheExpiryPeriod period after which unused svids from the cache will be cleaned
+	svidCacheExpiryPeriod time.Duration
 }
 
 // StaleEntry holds stale entries with SVIDs expiration time
@@ -138,6 +146,19 @@ type StaleEntry struct {
 }
 
 func New(log logrus.FieldLogger, trustDomain spiffeid.TrustDomain, bundle *Bundle, metrics telemetry.Metrics) *Cache {
+	return NewCache(log, trustDomain, bundle, metrics, DefaultMaxSvidCacheSize, DefaultSVIDCacheExpiryPeriod)
+}
+
+func NewCache(log logrus.FieldLogger, trustDomain spiffeid.TrustDomain, bundle *Bundle, metrics telemetry.Metrics,
+	maxSvidCacheSize int, svidCacheExpiryPeriod time.Duration,) *Cache {
+	if maxSvidCacheSize == 0 {
+		maxSvidCacheSize = DefaultMaxSvidCacheSize
+	}
+
+	if svidCacheExpiryPeriod == 0 {
+		svidCacheExpiryPeriod = DefaultSVIDCacheExpiryPeriod
+	}
+
 	return &Cache{
 		BundleCache:  NewBundleCache(trustDomain, bundle),
 		JWTSVIDCache: NewJWTSVIDCache(),
@@ -152,8 +173,9 @@ func New(log logrus.FieldLogger, trustDomain spiffeid.TrustDomain, bundle *Bundl
 		bundles: map[spiffeid.TrustDomain]*bundleutil.Bundle{
 			trustDomain: bundle,
 		},
-		svids :           make(map[string]*X509SVID),
-		maxSVIDCacheSize: 50, // 1000 maybe?
+		svids :                make(map[string]*X509SVID),
+		maxSvidCacheSize:      maxSvidCacheSize,
+		svidCacheExpiryPeriod: svidCacheExpiryPeriod,
 	}
 }
 
@@ -385,14 +407,14 @@ func (c *Cache) UpdateEntries(update *UpdateEntries, checkSVID func(*common.Regi
 
 	// add all entries with active subscribers
 	activeSubs, lastAccessTimestamps := c.syncSVIDs()
-	extraSize := len(c.svids) - c.maxSVIDCacheSize
+	extraSize := len(c.svids) - c.maxSvidCacheSize
 
 	// delete svids without subscribers and which have not been accessed in last hour
 	if extraSize > 0  {
 		// sort lastAccessTimestamps
 		sortTimestamps(lastAccessTimestamps)
 		now := time.Now()
-		beforeAnHour := now.Add(-1 * time.Hour).UnixMilli()
+		beforeAnHour := now.Add(-1 * c.svidCacheExpiryPeriod).UnixMilli()
 		for _, record := range lastAccessTimestamps {
 			if extraSize <= 0 {
 				break
@@ -574,7 +596,7 @@ func (c *Cache) syncSVIDs() (map[string]struct{},[]record) {
 		lastAccessTimestamps = append(lastAccessTimestamps, newRecord(record.lastAccessTimestamp, id))
 	}
 
-	remainderSize := c.maxSVIDCacheSize - len(c.svids)
+	remainderSize := c.maxSvidCacheSize - len(c.svids)
 	// add non active records which are not cached to newEntries
 	for id, _ := range c.records {
 		if len(c.newEntries) >= remainderSize {

@@ -22,16 +22,18 @@ type Config struct {
 	SVID             []*x509.Certificate
 	SVIDKey          keymanager.Key
 	Bundle           *cache.Bundle
-	Catalog          catalog.Catalog
-	TrustDomain      spiffeid.TrustDomain
-	Log              logrus.FieldLogger
-	Metrics          telemetry.Metrics
-	ServerAddr       string
-	SVIDCachePath    string
-	BundleCachePath  string
-	SyncInterval     time.Duration
-	RotationInterval time.Duration
-	SVIDStoreCache   *storecache.Cache
+	Catalog               catalog.Catalog
+	TrustDomain           spiffeid.TrustDomain
+	Log                   logrus.FieldLogger
+	Metrics               telemetry.Metrics
+	ServerAddr            string
+	SVIDCachePath         string
+	BundleCachePath       string
+	SyncInterval          time.Duration
+	RotationInterval      time.Duration
+	SVIDStoreCache        *storecache.Cache
+	MaxSvidCacheSize      int
+	SVIDCacheExpiryPeriod time.Duration
 
 	// Clk is the clock the manager will use to get time
 	Clk clock.Clock
@@ -55,7 +57,8 @@ func newManager(c *Config) *manager {
 		c.Clk = clock.New()
 	}
 
-	cache := cache.New(c.Log.WithField(telemetry.SubsystemName, telemetry.CacheManager), c.TrustDomain, c.Bundle, c.Metrics)
+	cache := cache.NewCache(c.Log.WithField(telemetry.SubsystemName, telemetry.CacheManager), c.TrustDomain, c.Bundle,
+		c.Metrics, c.MaxSvidCacheSize, c.SVIDCacheExpiryPeriod)
 
 	rotCfg := &svid.RotatorConfig{
 		SVIDKeyManager: keymanager.ForSVID(c.Catalog.GetKeyManager()),
