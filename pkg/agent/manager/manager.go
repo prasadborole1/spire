@@ -24,6 +24,8 @@ import (
 	"github.com/spiffe/spire/proto/spire/common"
 )
 
+const svidSyncInterval = 500 * time.Millisecond
+
 // Cache Manager errors
 var (
 	ErrNotCached = errors.New("not cached")
@@ -59,9 +61,9 @@ type Manager interface {
 	// SetRotationFinishedHook sets a hook that will be called when a rotation finished
 	SetRotationFinishedHook(func())
 
-	// MatchingIdentities returns all of the cached identities whose
-	// registration entry selectors are a subset of the passed selectors.
-	MatchingIdentities(selectors []*common.Selector) []cache.Identity
+	// MatchingRegistrationEntries returns all of the cached registration entries whose
+	// selectors are a subset of the passed selectors.
+	MatchingRegistrationEntries(selectors []*common.Selector) []*common.RegistrationEntry
 
 	// FetchWorkloadUpdates gets the latest workload update for the selectors
 	FetchWorkloadUpdate(selectors []*common.Selector) *cache.WorkloadUpdate
@@ -94,8 +96,8 @@ type manager struct {
 
 	// backoff calculator for fetch interval, backing off if error is returned on
 	// fetch attempt
-	backoff backoff.BackOff
-	svidSyncbackoff backoff.BackOff
+	backoff         backoff.BackOff
+	svidSyncBackoff backoff.BackOff
 
 	client client.Client
 
@@ -113,7 +115,7 @@ func (m *manager) Initialize(ctx context.Context) error {
 	m.storeBundle(m.cache.Bundle())
 
 	m.backoff = backoff.NewBackoff(m.clk, m.c.SyncInterval)
-	m.svidSyncbackoff = backoff.NewBackoff(m.clk, 500 * time.Millisecond)
+	m.svidSyncBackoff = backoff.NewBackoff(m.clk, svidSyncInterval)
 
 	err := m.synchronize(ctx)
 	if nodeutil.ShouldAgentReattest(err) {
@@ -148,18 +150,17 @@ func (m *manager) Run(ctx context.Context) error {
 }
 
 func (m *manager) SubscribeToCacheChanges(selectors cache.Selectors) cache.Subscriber {
-	// block until all svids are cached
-	subs := m.cache.SubscribeToWorkloadUpdates(selectors)
-	//TODO: clean up blocking logic
+	subscriber := m.cache.SubscribeToWorkloadUpdates(selectors)
+	backoff := backoff.NewBackoff(m.clk, svidSyncInterval)
+	// block until all svids are cached and subscriber is notified
 	for {
-		if len(m.cache.MissingSvidRecords(selectors)) == 0 {
-			break
+		if m.cache.Notify(selectors) {
+			return subscriber
 		}
-
-		time.Sleep(500 * time.Millisecond)
+		select {
+		case <-m.clk.After(backoff.NextBackOff()):
+		}
 	}
-	m.cache.NotifyBySelectorSet(selectors)
-	return subs
 }
 
 func (m *manager) SubscribeToSVIDChanges() observer.Stream {
@@ -182,9 +183,8 @@ func (m *manager) SetRotationFinishedHook(f func()) {
 	m.svid.SetRotationFinishedHook(f)
 }
 
-// TODO: needs to be updated to just return entries
-func (m *manager) MatchingIdentities(selectors []*common.Selector) []cache.Identity {
-	return m.cache.MatchingIdentities(selectors)
+func (m *manager) MatchingRegistrationEntries(selectors []*common.Selector) []*common.RegistrationEntry {
+	return m.cache.MatchingRegistrationEntries(selectors)
 }
 
 func (m *manager) CountSVIDs() int {
@@ -226,9 +226,9 @@ func (m *manager) FetchJWTSVID(ctx context.Context, spiffeID spiffeid.ID, audien
 }
 
 func (m *manager) getEntryID(spiffeID string) string {
-	for _, identity := range m.cache.Identities() {
-		if identity.Entry.SpiffeId == spiffeID {
-			return identity.Entry.EntryId
+	for _, entry := range m.cache.Entries() {
+		if entry.SpiffeId == spiffeID {
+			return entry.EntryId
 		}
 	}
 	return ""
@@ -259,7 +259,7 @@ func (m *manager) runSynchronizer(ctx context.Context) error {
 func (m *manager) runSyncSVIDs(ctx context.Context) error {
 	for {
 		select {
-		case <-m.clk.After(m.svidSyncbackoff.NextBackOff()):
+		case <-m.clk.After(m.svidSyncBackoff.NextBackOff()):
 		case <-ctx.Done():
 			return nil
 		}
@@ -270,7 +270,7 @@ func (m *manager) runSyncSVIDs(ctx context.Context) error {
 			// Just log the error and wait for next synchronization
 			m.c.Log.WithError(err).Error("SVID sync failed")
 		default:
-			m.svidSyncbackoff.Reset()
+			m.svidSyncBackoff.Reset()
 		}
 	}
 }

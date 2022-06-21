@@ -35,14 +35,11 @@ type Cache interface {
 
 	// GetStaleEntries gets a list of records that need update SVIDs
 	GetStaleEntries() []*cache.StaleEntry
-
-	// GetNewEntries gets a list of records that need new SVIDs
-	GetNewEntries() []*cache.StaleEntry
 }
 
 func (m *manager) syncSVIDs(ctx context.Context) (err error) {
-	m.cache.SyncActiveSubscribersSVIDs()
-	return m.newSVIDs(ctx, m.cache.GetNewEntries(), m.cache)
+	m.cache.SyncSVIDsWithSubscribers()
+	return m.updateSVIDs(ctx, m.cache.GetStaleEntries(), m.cache)
 }
 
 // synchronize fetches the authorized entries from the server, updates the
@@ -71,7 +68,6 @@ func (m *manager) updateCache(ctx context.Context, update *cache.UpdateEntries, 
 	// in this interval.
 	//
 	// the values in `update` now belong to the cache. DO NOT MODIFY.
-	var csrs []csrRequest
 	var expiring int
 	var outdated int
 	c.UpdateEntries(update, func(existingEntry, newEntry *common.RegistrationEntry, svid *cache.X509SVID) bool {
@@ -113,43 +109,24 @@ func (m *manager) updateCache(ctx context.Context, update *cache.UpdateEntries, 
 			telemetry.Count: len(staleEntries),
 			telemetry.Limit: limits.SignLimitPerIP,
 		}).Debug("Renewing stale entries")
-		for _, staleEntry := range staleEntries {
-			// we've exceeded the CSR limit, don't make any more CSRs
-			if len(csrs) >= limits.SignLimitPerIP {
-				break
-			}
-
-			csrs = append(csrs, csrRequest{
-				EntryID:              staleEntry.Entry.EntryId,
-				SpiffeID:             staleEntry.Entry.SpiffeId,
-				CurrentSVIDExpiresAt: staleEntry.ExpiresAt,
-			})
-		}
-
-		update, err := m.fetchSVIDs(ctx, csrs)
-		if err != nil {
-			return err
-		}
-		// the values in `update` now belong to the cache. DO NOT MODIFY.
-		c.UpdateSVIDs(update)
+		return m.updateSVIDs(ctx, staleEntries, c)
 	}
-
-	return m.newSVIDs(ctx, c.GetNewEntries(), c)
+	return nil
 }
 
-func (m *manager) newSVIDs(ctx context.Context, entries []*cache.StaleEntry, c Cache) error{
+func (m *manager) updateSVIDs(ctx context.Context, entries []*cache.StaleEntry, c Cache) error {
 	var csrs []csrRequest
 	if len(entries) > 0 {
-		for _, newEntry := range entries {
+		for _, entry := range entries {
 			// we've exceeded the CSR limit, don't make any more CSRs
 			if len(csrs) >= limits.SignLimitPerIP {
 				break
 			}
 
 			csrs = append(csrs, csrRequest{
-				EntryID:              newEntry.Entry.EntryId,
-				SpiffeID:             newEntry.Entry.SpiffeId,
-				CurrentSVIDExpiresAt: newEntry.ExpiresAt,
+				EntryID:              entry.Entry.EntryId,
+				SpiffeID:             entry.Entry.SpiffeId,
+				CurrentSVIDExpiresAt: entry.ExpiresAt,
 			})
 		}
 

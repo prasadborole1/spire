@@ -19,9 +19,9 @@ import (
 // Config holds a cache manager configuration
 type Config struct {
 	// Agent SVID and key resulting from successful attestation.
-	SVID             []*x509.Certificate
-	SVIDKey          keymanager.Key
-	Bundle           *cache.Bundle
+	SVID                  []*x509.Certificate
+	SVIDKey               keymanager.Key
+	Bundle                *cache.Bundle
 	Catalog               catalog.Catalog
 	TrustDomain           spiffeid.TrustDomain
 	Log                   logrus.FieldLogger
@@ -57,8 +57,8 @@ func newManager(c *Config) *manager {
 		c.Clk = clock.New()
 	}
 
-	cache := cache.NewCache(c.Log.WithField(telemetry.SubsystemName, telemetry.CacheManager), c.TrustDomain, c.Bundle,
-		c.Metrics, c.MaxSvidCacheSize, c.SVIDCacheExpiryPeriod)
+	cache := cache.New(c.Log.WithField(telemetry.SubsystemName, telemetry.CacheManager), c.TrustDomain, c.Bundle,
+		c.Metrics, c.MaxSvidCacheSize, c.SVIDCacheExpiryPeriod, c.Clk)
 
 	rotCfg := &svid.RotatorConfig{
 		SVIDKeyManager: keymanager.ForSVID(c.Catalog.GetKeyManager()),
