@@ -200,6 +200,7 @@ func (s *Service) BatchCreateEntry(ctx context.Context, req *entryv1.BatchCreate
 		if err != nil {
 			log.WithError(err).Error("Failed to update cache")
 		} else {
+			// TODO: clean this up
 			log.Info("Updated in-memory cache")
 		}
 	}()

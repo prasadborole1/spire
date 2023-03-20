@@ -163,6 +163,109 @@ func TestCacheReturnsClonedEntries(t *testing.T) {
 	spiretest.RequireProtoListEqual(t, []*types.Entry{expected}, actual)
 }
 
+func TestUpdateCache(t *testing.T) {
+	ds := fakedatastore.New(t)
+	ctx := context.Background()
+
+	const serverID = "spiffe://example.org/spire/server"
+	agentIDs := []spiffeid.ID{
+		spiffeid.RequireFromString("spiffe://example.org/spire/agent/agent1"),
+		spiffeid.RequireFromString("spiffe://example.org/spire/agent/agent2"),
+		spiffeid.RequireFromString("spiffe://example.org/spire/agent/agent3"),
+	}
+
+	s1 := &common.Selector{Type: "s", Value: "1"}
+	s2 := &common.Selector{Type: "s", Value: "2"}
+	s3 := &common.Selector{Type: "s", Value: "3"}
+
+	irrelevantSelectors := []*common.Selector{
+		{Type: "not", Value: "relevant"},
+	}
+
+	nodeAliasEntriesToCreate := []*common.RegistrationEntry{
+		{
+			ParentId:  serverID,
+			SpiffeId:  "spiffe://example.org/agent1",
+			Selectors: []*common.Selector{s1, s2},
+		},
+		{
+			ParentId:  serverID,
+			SpiffeId:  "spiffe://example.org/agent2",
+			Selectors: []*common.Selector{s1},
+		},
+	}
+
+	nodeAliasEntries := make([]*common.RegistrationEntry, len(nodeAliasEntriesToCreate))
+	for i, e := range nodeAliasEntriesToCreate {
+		nodeAliasEntries[i] = createRegistrationEntry(ctx, t, ds, e)
+	}
+
+	workloadEntriesToCreate := []*common.RegistrationEntry{
+		{
+			ParentId:  nodeAliasEntries[0].SpiffeId,
+			SpiffeId:  "spiffe://example.org/workload1",
+			Selectors: irrelevantSelectors,
+		},
+		{
+			ParentId:  nodeAliasEntries[1].SpiffeId,
+			SpiffeId:  "spiffe://example.org/workload2",
+			Selectors: irrelevantSelectors,
+		},
+		{
+			ParentId:  agentIDs[2].String(),
+			SpiffeId:  "spiffe://example.org/workload3",
+			Selectors: irrelevantSelectors,
+		},
+	}
+
+	for i, agentID := range agentIDs {
+		node := &common.AttestedNode{
+			SpiffeId:            agentID.String(),
+			AttestationDataType: testNodeAttestor,
+			CertSerialNumber:    strconv.Itoa(i),
+			CertNotAfter:        time.Now().Add(24 * time.Hour).Unix(),
+		}
+
+		createAttestedNode(t, ds, node)
+	}
+
+	setNodeSelectors(ctx, t, ds, agentIDs[0].String(), s1, s2)
+	setNodeSelectors(ctx, t, ds, agentIDs[1].String(), s1, s3)
+
+	cache, err := BuildFromDataStore(context.Background(), ds)
+	assert.NoError(t, err)
+
+	sortEntries := func(es []*types.Entry) {
+		sort.Slice(es, func(a, b int) bool {
+			return es[a].Id < es[b].Id
+		})
+	}
+
+	assertAuthorizedEntries := func(agentID spiffeid.ID, entries ...*common.RegistrationEntry) {
+		expected, err := api.RegistrationEntriesToProto(entries)
+		require.NoError(t, err)
+
+		authorizedEntries := cache.GetAuthorizedEntries(agentID)
+
+		sortEntries(expected)
+		sortEntries(authorizedEntries)
+
+		spiretest.AssertProtoListEqual(t, expected, authorizedEntries)
+	}
+
+	assertAuthorizedEntries(agentIDs[0], nodeAliasEntries...)
+	assertAuthorizedEntries(agentIDs[1], nodeAliasEntries[1])
+	assertAuthorizedEntries(agentIDs[2])
+
+	entriesToUpdate, err := api.RegistrationEntriesToProto(workloadEntriesToCreate)
+	require.NoError(t, err)
+	cache.Update(entriesToUpdate)
+
+	assertAuthorizedEntries(agentIDs[0], append(nodeAliasEntries, workloadEntriesToCreate[:2]...)...)
+	assertAuthorizedEntries(agentIDs[1], nodeAliasEntries[1], workloadEntriesToCreate[1])
+	assertAuthorizedEntries(agentIDs[2], workloadEntriesToCreate[2])
+}
+
 func TestFullCacheNodeAliasing(t *testing.T) {
 	ds := fakedatastore.New(t)
 	ctx := context.Background()
@@ -461,8 +564,6 @@ func TestFullCacheExcludesNodeSelectorMappedEntriesForExpiredAgents(t *testing.T
 	expectedEntry, err := api.RegistrationEntryToProto(workloadEntries[numWorkloadEntries-1])
 	require.NoError(t, err)
 	spiretest.AssertProtoEqual(t, expectedEntry, entries[0])
-
-	//newEntry := createRegistrationEntry()
 }
 
 func TestBuildIteratorError(t *testing.T) {
