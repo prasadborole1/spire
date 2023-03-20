@@ -193,9 +193,30 @@ func (s *Service) BatchCreateEntry(ctx context.Context, req *entryv1.BatchCreate
 		})
 	}
 
+	// update cache in separate goroutine
+	go func() {
+		err := s.updateCache(ctx, results)
+		log := rpccontext.Logger(ctx)
+		if err != nil {
+			log.WithError(err).Error("Failed to update cache")
+		} else {
+			log.Info("Updated in-memory cache")
+		}
+	}()
+
 	return &entryv1.BatchCreateEntryResponse{
 		Results: results,
 	}, nil
+}
+
+func (s *Service) updateCache(ctx context.Context, results []*entryv1.BatchCreateEntryResponse_Result) error {
+	var successfulEntries []*types.Entry
+	for _, e := range results {
+		if e.GetStatus() == api.OK() {
+			successfulEntries = append(successfulEntries, e.GetEntry())
+		}
+	}
+	return s.ef.Update(ctx, successfulEntries)
 }
 
 func (s *Service) createEntry(ctx context.Context, e *types.Entry, outputMask *types.EntryMask) *entryv1.BatchCreateEntryResponse_Result {

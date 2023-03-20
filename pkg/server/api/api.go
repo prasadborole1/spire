@@ -16,6 +16,7 @@ type AuthorizedEntryFetcher interface {
 	// FetchAuthorizedEntries fetches the entries that the specified
 	// SPIFFE ID is authorized for
 	FetchAuthorizedEntries(ctx context.Context, id spiffeid.ID) ([]*types.Entry, error)
+	Update(ctx context.Context, registrations []*types.Entry) error
 }
 
 // AuthorizedEntryFetcherFunc is an implementation of AuthorizedEntryFetcher

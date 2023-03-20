@@ -26,6 +26,18 @@ type AuthorizedEntryFetcherWithFullCache struct {
 	cacheReloadInterval time.Duration
 }
 
+func (a *AuthorizedEntryFetcherWithFullCache) Update(ctx context.Context, registrations []*types.Entry) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	errChan := make(chan error)
+	select {
+	case <-ctx.Done():
+		return nil
+	case errChan <- a.cache.Update(registrations):
+		return <-errChan
+	}
+}
+
 func NewAuthorizedEntryFetcherWithFullCache(ctx context.Context, buildCache entryCacheBuilderFn, log logrus.FieldLogger, clk clock.Clock, cacheReloadInterval time.Duration) (*AuthorizedEntryFetcherWithFullCache, error) {
 	log.Info("Building in-memory entry cache")
 	cache, err := buildCache(ctx)

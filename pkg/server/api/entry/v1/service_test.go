@@ -4095,6 +4095,10 @@ type entryFetcher struct {
 	entries []*types.Entry
 }
 
+func (f *entryFetcher) Update(ctx context.Context, registrations []*types.Entry) error {
+	return nil
+}
+
 func (f *entryFetcher) FetchAuthorizedEntries(ctx context.Context, agentID spiffeid.ID) ([]*types.Entry, error) {
 	if f.err != "" {
 		return nil, status.Error(codes.Internal, f.err)

@@ -29,6 +29,7 @@ var _ Cache = (*FullEntryCache)(nil)
 // at a particular moment in time.
 type Cache interface {
 	GetAuthorizedEntries(agentID spiffeid.ID) []*types.Entry
+	Update(registrations []*types.Entry) error
 }
 
 // Selector is a key-value attribute of a node or workload.
@@ -88,8 +89,9 @@ type Agent struct {
 }
 
 type FullEntryCache struct {
-	aliases map[spiffeID][]aliasEntry
-	entries map[spiffeID][]*types.Entry
+	aliases        map[spiffeID][]aliasEntry
+	aliasSelectors map[spiffeID]selectorSet
+	entries        map[spiffeID][]*types.Entry
 }
 
 type selectorSet map[Selector]struct{}
@@ -103,18 +105,88 @@ type spiffeID struct {
 	Path string
 }
 
+type aliasesValues struct {
+	selectors    selectorSet
+	aliasEntries []aliasEntry
+}
+
 type aliasEntry struct {
 	id    spiffeID
 	entry *types.Entry
 }
 
+type aliasInfo struct {
+	aliasEntry
+	selectors selectorSet
+}
+
+func (c *FullEntryCache) Update(registrations []*types.Entry) error {
+	bysel := make(map[Selector][]aliasInfo)
+
+	for _, entry := range registrations {
+		// TODO handle bad entries
+		parentID := spiffeIDFromProto(entry.ParentId)
+		if parentID.Path == "/spire/server" {
+			alias := aliasInfo{
+				aliasEntry: aliasEntry{
+					id:    spiffeIDFromProto(entry.SpiffeId),
+					entry: entry,
+				},
+				selectors: selectorSetFromProto(entry.Selectors),
+			}
+			for selector := range alias.selectors {
+				bysel[selector] = append(bysel[selector], alias)
+			}
+			continue
+		}
+		c.appendToEntries(parentID, entry)
+	}
+
+	// update aliases
+	aliasSeen := allocStringSet()
+	defer freeStringSet(aliasSeen)
+	for agentID, agentSelectors := range c.aliasSelectors {
+		clearStringSet(aliasSeen)
+		for s := range agentSelectors {
+			for _, alias := range bysel[s] {
+				if _, ok := aliasSeen[alias.entry.Id]; ok {
+					continue
+				}
+				aliasSeen[alias.entry.Id] = struct{}{}
+				if isSubset(alias.selectors, agentSelectors) {
+					c.appendToAliases(agentID, alias.aliasEntry)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (c *FullEntryCache) appendToAliases(agentID spiffeID, newEntry aliasEntry) {
+	if entries, ok := c.aliases[agentID]; ok {
+		for _, alias := range entries {
+			if alias.entry.Id == newEntry.entry.Id {
+				return
+			}
+		}
+		c.aliases[agentID] = append(c.aliases[agentID], newEntry)
+	}
+}
+
+func (c *FullEntryCache) appendToEntries(parentID spiffeID, newEntry *types.Entry) {
+	if v, ok := c.entries[parentID]; ok {
+		for _, entry := range v {
+			if entry.Id == newEntry.Id {
+				return
+			}
+		}
+	}
+	c.entries[parentID] = append(c.entries[parentID], newEntry)
+}
+
 // Build queries the data source for all registration entries and Agent selectors and builds an in-memory
 // representation of the data that can be used for efficient lookups.
 func Build(ctx context.Context, entryIter EntryIterator, agentIter AgentIterator) (*FullEntryCache, error) {
-	type aliasInfo struct {
-		aliasEntry
-		selectors selectorSet
-	}
 	bysel := make(map[Selector][]aliasInfo)
 
 	entries := make(map[spiffeID][]*types.Entry)
@@ -144,10 +216,12 @@ func Build(ctx context.Context, entryIter EntryIterator, agentIter AgentIterator
 	defer freeStringSet(aliasSeen)
 
 	aliases := make(map[spiffeID][]aliasEntry)
+	aliasSelectors := make(map[spiffeID]selectorSet)
 	for agentIter.Next(ctx) {
 		agent := agentIter.Agent()
 		agentID := spiffeIDFromID(agent.ID)
 		agentSelectors := selectorSetFromProto(agent.Selectors)
+		aliasSelectors[agentID] = agentSelectors
 		// track which aliases we've evaluated so far to make sure we don't
 		// add one twice.
 		clearStringSet(aliasSeen)
@@ -168,8 +242,9 @@ func Build(ctx context.Context, entryIter EntryIterator, agentIter AgentIterator
 	}
 
 	return &FullEntryCache{
-		aliases: aliases,
-		entries: entries,
+		aliases:        aliases,
+		entries:        entries,
+		aliasSelectors: aliasSelectors,
 	}, nil
 }
 

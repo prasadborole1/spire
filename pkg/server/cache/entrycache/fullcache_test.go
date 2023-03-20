@@ -131,6 +131,12 @@ func TestCache(t *testing.T) {
 	actual := cache.GetAuthorizedEntries(spiffeid.RequireFromString(rootID))
 
 	spiretest.AssertProtoListEqual(t, expected, actual)
+
+	require.NoError(t, cache.Update(expected))
+
+	actual = cache.GetAuthorizedEntries(spiffeid.RequireFromString(rootID))
+
+	spiretest.AssertProtoListEqual(t, expected, actual)
 }
 
 func TestCacheReturnsClonedEntries(t *testing.T) {
@@ -455,6 +461,8 @@ func TestFullCacheExcludesNodeSelectorMappedEntriesForExpiredAgents(t *testing.T
 	expectedEntry, err := api.RegistrationEntryToProto(workloadEntries[numWorkloadEntries-1])
 	require.NoError(t, err)
 	spiretest.AssertProtoEqual(t, expectedEntry, entries[0])
+
+	//newEntry := createRegistrationEntry()
 }
 
 func TestBuildIteratorError(t *testing.T) {
